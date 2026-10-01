@@ -1,5 +1,5 @@
 'use strict';
-// Раздел 12 ТЗ: переключение, отказы состояния, уборка.
+// Сценарии: переключение, отказы состояния, уборка.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

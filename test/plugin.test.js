@@ -28,7 +28,7 @@ test('манифесты: имя плагина совпадает с запис
   assert.strictEqual(market.plugins[0].name, plugin.name);
 });
 
-test('hooks.json: все события ТЗ на месте, скрипты существуют, таймауты заданы', () => {
+test('hooks.json: все события плагина на месте, скрипты существуют, таймауты заданы', () => {
   const hooks = json('hooks/hooks.json').hooks;
   const expected = {
     SessionStart: 30,
@@ -58,7 +58,7 @@ test('hooks.json: все события ТЗ на месте, скрипты с�
 
 test('принципы: до 100 строк и в пределах лимита вывода хука', () => {
   const text = read('core/principles.md');
-  assert.ok(text.split('\n').length <= 100, 'ориентир ТЗ: до 100 строк');
+  assert.ok(text.split('\n').length <= 100, 'принципы короткие: до 100 строк');
   assert.ok(text.length < 9000, 'вывод SessionStart ограничен 10 000 символов, нужен запас на напоминание');
   for (const heading of ['Уровни и порядок конфликтов', 'Остановка', 'Обсуждение', 'Тесты', 'Сборка и прогон']) {
     assert.ok(text.includes('## ' + heading), heading);

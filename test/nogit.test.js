@@ -1,5 +1,5 @@
 'use strict';
-// Раздел 12 ТЗ: урезанный режим вне git.
+// Сценарии: урезанный режим вне git.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

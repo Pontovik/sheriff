@@ -1,5 +1,5 @@
 'use strict';
-// Раздел 12 ТЗ: ревью, снимки, запуски ревьюера, предохранитель, влияющие файлы.
+// Сценарии: ревью, снимки, запуски ревьюера, предохранитель, влияющие файлы.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');

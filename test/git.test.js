@@ -1,5 +1,5 @@
 'use strict';
-// Раздел 12 ТЗ: файлы и база в git-режиме.
+// Сценарии: файлы и база в git-режиме.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
