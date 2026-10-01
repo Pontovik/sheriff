@@ -96,6 +96,26 @@ test('ревьюер: только инструменты чтения', () => {
   assert.deepStrictEqual(fm.tools.split(',').map((t) => t.trim()).sort(), ['Glob', 'Grep', 'Read']);
 });
 
+test('каталог плагинов: лицензия и иконка по его требованиям', () => {
+  assert.strictEqual(json('.claude-plugin/plugin.json').license, 'MIT');
+  assert.match(read('LICENSE'), /^MIT License/);
+  const icon = fs.readFileSync(path.join(ROOT, '.claude-plugin', 'icon.png'));
+  assert.ok(icon.subarray(1, 4).toString('ascii') === 'PNG', 'иконка в PNG');
+  const width = icon.readUInt32BE(16);
+  const height = icon.readUInt32BE(20);
+  assert.strictEqual(width, height, 'иконка квадратная');
+  assert.ok(width >= 512 && width <= 2048, `сторона ${width}: нужно от 512 до 2048`);
+  assert.ok(icon.length < 2 * 1024 * 1024, 'иконка меньше 2 МБ');
+});
+
+test('каталог плагинов: хуки не разрешают вызовы и не меняют вход инструмента', () => {
+  for (const file of fs.readdirSync(path.join(ROOT, 'hooks')).filter((f) => f.endsWith('.js'))) {
+    const text = read('hooks/' + file);
+    assert.doesNotMatch(text, /permissionDecision:\s*'(allow|ask)'/, file);
+    assert.doesNotMatch(text, /updatedInput/, file);
+  }
+});
+
 test('зависимостей npm нет', () => {
   assert.strictEqual(fs.existsSync(path.join(ROOT, 'package.json')), false);
   assert.strictEqual(fs.existsSync(path.join(ROOT, 'node_modules')), false);

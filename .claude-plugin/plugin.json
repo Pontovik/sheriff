@@ -1,11 +1,14 @@
 {
   "name": "sheriff",
   "displayName": "Sheriff",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "В городе новый шериф. Claude не срезает углы и не поддакивает: делает как принято в проекте, не раздувает задачу, говорит, когда не согласен. После /sheriff:on ищет готовое решение до кода и не закончит ход, пока правки не проверил второй агент.",
   "author": {
     "name": "Maxim Razinkov"
   },
+  "license": "MIT",
+  "homepage": "https://github.com/Pontovik/sheriff",
+  "repository": "https://github.com/Pontovik/sheriff",
   "keywords": [
     "rules",
     "review",

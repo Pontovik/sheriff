@@ -17,17 +17,17 @@
 
 ## Установка
 
-Из локальной папки или из git-репозитория, две команды:
+В Claude Code:
 
 ```
-claude plugin marketplace add C:\Projects\sheriff
-claude plugin install sheriff@razinkov-plugins
+/plugin marketplace add Pontovik/sheriff
+/plugin install sheriff@razinkov-plugins
 ```
 
-Для разовой проверки без установки:
+Для разовой проверки без установки, из клона репозитория:
 
 ```
-claude --plugin-dir C:\Projects\sheriff
+claude --plugin-dir <путь к клону>
 ```
 
 ## Использование
@@ -52,7 +52,7 @@ claude --plugin-dir C:\Projects\sheriff
 
 | Поле | По умолчанию | Смысл |
 | --- | --- | --- |
-| `ignore` | `*.md`, картинки, офисные и медиа-файлы, `LICENSE` в корне | Шаблоны файлов, которые не требуют ревью. Дополняет список по умолчанию |
+| `ignore` | `*.md`, картинки, офисные и медиа-файлы, `LICENSE` в корне, файлы с секретами (`.env`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc` и другие) | Шаблоны файлов, которые не требуют ревью. Дополняет список по умолчанию |
 | `include` | пусто | Шаблоны файлов, которые требуют ревью вопреки `ignore` |
 | `excludeDirs` | `.git`, `node_modules`, `bin`, `obj` и другие | Каталоги, которые не обходятся вне git. Дополняет список |
 | `reviewTimeoutMinutes` | 30 | Через сколько активный запуск ревьюера считается оборванным |
@@ -61,12 +61,12 @@ claude --plugin-dir C:\Projects\sheriff
 | `retentionDays` | 14 | Срок хранения данных сессий |
 | `maxFileBytes` | 2097152 | Файл больше этого попадает в дифф заголовком без тела |
 | `maxFileDiffBytes` | 102400 | Дифф файла больше этого попадает заголовком без тела |
-| `maxPromptDiffBytes` | 204800 | Общий дифф больше этого передаётся ревьюеру путём к файлу |
+| `maxPromptDiffBytes` | 204800 | Общий дифф больше этого передаётся ревьюеру путём к файлу. Независимо от настройки дифф идёт файлом, если вместе с данными ревью не помещается в 9000 символов |
 | `noGitLimitMB` | 50 | Лимит суммарного размера влияющих файлов вне git |
 
 Шаблон без `/` сравнивается с именем файла на любой глубине, шаблон с `/` с путём от корня. Ведущий `/` привязывает имя к корню: `/LICENSE`. Поддерживаются `*`, `**`, `?`, регистр не учитывается.
 
-Всё, что не попало в `ignore`, требует ревью. Файлы `*.txt` по умолчанию тоже: среди них `requirements.txt` и `CMakeLists.txt`.
+Всё, что не попало в `ignore`, требует ревью. Файлы из `ignore` плагин не читает, поэтому секреты не попадают ни в снимок, ни к ревьюеру. Чтобы такой файл всё же проверялся, например `.env.example`, добавь его в `include`. Файлы `*.txt` по умолчанию тоже: среди них `requirements.txt` и `CMakeLists.txt`.
 
 Настройки читаются при включении режима и при смене базы. Правка `.sheriff.json` посреди сессии начнёт действовать после `/sheriff:on --rebase`, а сам файл попадёт в ревью как обычное изменение.
 
@@ -90,7 +90,7 @@ claude --plugin-dir C:\Projects\sheriff
 
 ```
 core/principles.md        принципы, печатаются в контекст при старте сессии
-core/review-rubric.md     рубрика ревьюера, хук дописывает её в его промпт
+core/review-rubric.md     рубрика ревьюера, хук передаёт её в его контекст
 hooks/hooks.json          события и таймауты
 hooks/lib/state.js        состояние сессии, лок, журнал, уборка
 hooks/lib/changes.js      база, кандидаты, изменения сессии, дифф
@@ -99,8 +99,8 @@ hooks/lib/fs-walk.js      обход вне git
 hooks/lib/config.js       .sheriff.json и значения по умолчанию
 hooks/session-start.js    SessionStart
 hooks/mode-toggle.js       UserPromptExpansion для /sheriff:on
-hooks/review-snapshot.js  PreToolUse(Agent): снимок и дифф для ревьюера
-hooks/review-bind.js      SubagentStart: привязка agent_id
+hooks/review-snapshot.js  PreToolUse(Agent): снимок и дифф для ревьюера, вход вызова не меняет
+hooks/review-bind.js      SubagentStart: привязка agent_id, данные ревью в контекст субагента
 hooks/review-done.js      SubagentStop: результат ревью
 hooks/review-failed.js    PostToolUseFailure(Agent): сбой ревьюера
 hooks/require-review.js   Stop: блокировка без действительного ревью
@@ -108,6 +108,8 @@ skills/on, skills/off, skills/status, skills/debate, agents/reviewer.md
 ```
 
 Состояние лежит в папке данных плагина, по папке на `session_id`. В репозиторий проекта плагин ничего не пишет.
+
+Хуки не разрешают вызовы инструментов и не меняют их вход, только отклоняют. Данные ревью доходят до субагента так: PreToolUse снимает снимок и пишет данные в его папку, SubagentStart отдаёт их в контекст ревьюера. Контекст хука длиннее 10 000 символов Claude Code заменяет превью на 2 КБ, поэтому снимок и строка отчёта идут первыми, а дифф и рубрика, которые не помещаются, передаются путём к файлу.
 
 ## Тесты
 
@@ -119,8 +121,14 @@ node test/run.js
 
 Что проверено на настоящем Claude Code 2.1.281 под Windows: манифесты, скиллы и агент проходят `claude plugin validate`, хуки SessionStart и UserPromptExpansion срабатывают, их вход совпадает с тем, что подают тесты.
 
+Проверено вживую там же: контекст из SubagentStart попадает в системный промпт субагента, ревьюер читает файлы плагина без запроса разрешения, контекст длиннее 10 000 символов заменяется превью и ссылкой на файл.
+
 Что ещё не проверено вживую: цепочка PreToolUse, SubagentStart, SubagentStop и Stop с настоящим субагентом, установка двумя командами, запуск под Linux.
 
 ## Отладка
 
 Переменная окружения `SHERIFF_DEBUG=1` пишет вход и выход каждого хука в `debug.jsonl` в папке данных плагина. Журнал последних 200 событий сессии лежит в `state.json`, поле `journal`.
+
+## Лицензия
+
+MIT, см. [LICENSE](LICENSE).

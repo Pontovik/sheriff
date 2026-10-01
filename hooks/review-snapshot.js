@@ -1,6 +1,7 @@
 'use strict';
-// PreToolUse(Agent) для sheriff:reviewer: резерв запуска, снимок изменений, замороженный дифф,
-// рубрика и дифф в промпт субагента, запуск в переднем плане.
+// PreToolUse(Agent) для sheriff:reviewer: резерв запуска, снимок изменений, замороженный дифф
+// и данные ревью в файле снимка. Вход инструмента хук не меняет: данные ревью передаёт субагенту
+// хук SubagentStart (review-bind.js), а запуск в фоне хук запрещает.
 const fs = require('fs');
 const path = require('path');
 const io = require('./lib/io');
@@ -9,6 +10,8 @@ const cfgLib = require('./lib/config');
 const ch = require('./lib/changes');
 
 const KEEP_SNAPSHOTS = 5;
+// Контекст хука длиннее 10 000 символов Claude Code заменяет превью на 2 КБ и ссылкой на файл.
+const CONTEXT_BUDGET_CHARS = 9000;
 const HEAD_WARNING =
   'HEAD сменился с момента включения режима: изменения сессии включают разницу веток, при необходимости /sheriff:on --rebase.';
 
@@ -32,29 +35,40 @@ function pruneSnapshots(state, sessionDir) {
   }
 }
 
-function appendix(snapId, rubric, diff, diffFile, cfg, headChanged, omitted, skipped) {
-  const parts = ['', '---', 'Данные ревью, добавлены хуком плагина sheriff.', '', `Идентификатор снимка: ${snapId}`];
-  if (headChanged) parts.push('', 'Предупреждение: ' + HEAD_WARNING);
-  parts.push('', '# Рубрика', '', rubric.trim(), '', '# Замороженный дифф', '');
-  if (Buffer.byteLength(diff) <= cfg.maxPromptDiffBytes) {
-    parts.push(diff.trimEnd());
-  } else {
-    const kb = Math.round(Buffer.byteLength(diff) / 1024);
-    parts.push(`Дифф занимает ${kb} КБ и в промпт не помещён. Прочитай его целиком из файла: ${diffFile}`);
-  }
-  if (skipped.length) {
-    parts.push('', `Вне диффа остались изменённые пути, которые sheriff не читает (подмодули, ссылки): ${skipped.join(', ')}`);
-  }
-  if (omitted.length) {
-    parts.push('', `Файлы без тела диффа (${omitted.length}): новое содержимое читай из репозитория.`);
-  }
-  parts.push(
+// Данные ревью для контекста субагента. Снимок и строка отчёта идут первыми: от слишком длинного
+// контекста Claude Code показывает только первые 2 КБ. Дифф и рубрика встают целиком,
+// пока помещаются в бюджет, иначе передаются путём к файлу.
+function reviewContext(snapId, rubricFile, diff, diffFile, cfg, headChanged, omitted, skipped) {
+  const head = [
+    'Данные ревью, добавлены хуком плагина sheriff.',
+    '',
+    `Идентификатор снимка: ${snapId}`,
     '',
     'Последняя строка отчёта обязана быть ровно одной из двух:',
     `SHERIFF-REVIEW ${snapId} COMPLETE`,
-    `SHERIFF-REVIEW ${snapId} INCOMPLETE <причина>`
-  );
-  return parts.join('\n');
+    `SHERIFF-REVIEW ${snapId} INCOMPLETE <причина>`,
+  ];
+  if (headChanged) head.push('', 'Предупреждение: ' + HEAD_WARNING);
+  if (omitted.length) {
+    head.push('', `Файлы без тела диффа (${omitted.length}): новое содержимое читай из репозитория.`);
+  }
+  if (skipped.length) {
+    head.push('', `Вне диффа остались изменённые пути, которые sheriff не читает (подмодули, ссылки): ${skipped.join(', ')}`);
+  }
+
+  const section = (title, body) => [title, '', body].join('\n');
+  const compose = (rubric, diffPart) => [...head, '', rubric, '', diffPart].join('\n');
+  const rubricInline = section('# Рубрика', fs.readFileSync(rubricFile, 'utf8').trim());
+  const rubricByFile = section('# Рубрика', `Прочитай рубрику целиком из файла: ${rubricFile}`);
+  const diffInline = section('# Замороженный дифф', diff.trimEnd());
+  const diffByFile = section('# Замороженный дифф', `Прочитай дифф целиком из файла: ${diffFile}`);
+
+  // По убыванию полноты: первый вариант, который помещается в бюджет. Дифф важнее рубрики.
+  const variants = [];
+  if (Buffer.byteLength(diff) <= cfg.maxPromptDiffBytes) variants.push([rubricInline, diffInline], [rubricByFile, diffInline]);
+  variants.push([rubricInline, diffByFile]);
+  const fit = variants.find(([r, d]) => compose(r, d).length <= CONTEXT_BUDGET_CHARS);
+  return fit ? compose(fit[0], fit[1]) : compose(rubricByFile, diffByFile);
 }
 
 io.run(
@@ -66,6 +80,10 @@ io.run(
     const cur = st.peek(sid);
     // Режим выключен или состояние нечитаемо: хук не вмешивается.
     if (cur.status !== 'ok' || cur.state.mode !== 'on' || !cur.state.base) return;
+    // Фоновый ревьюер переживает свой ход, а запуск из другого хода считается брошенным.
+    if (input.tool_input.run_in_background === true) {
+      return deny('запусти sheriff:reviewer в переднем плане, run_in_background: false');
+    }
 
     const base = cur.state.base;
     const generation = cur.state.generation;
@@ -151,6 +169,13 @@ io.run(
         JSON.stringify({ id: snapId, generation, createdAt, files: ch.fingerprint(res.changes) })
       );
 
+      // Данные ревью для хука SubagentStart (review-bind.js).
+      const rubricFile = path.join(io.pluginRoot(), 'core', 'review-rubric.md');
+      fs.writeFileSync(
+        path.join(snapDir, 'context.md'),
+        reviewContext(snapId, rubricFile, diff.text, diffFile, cfg, res.headChanged, diff.omitted, res.skipped)
+      );
+
       // Шаг 4. Под локом: привязка снимка к резерву.
       const bound = st.transact(
         sid,
@@ -175,23 +200,8 @@ io.run(
         return deny('резерв запуска снят или база сменилась, повтори вызов ревьюера');
       }
 
-      // Шаг 5. Обновление входа инструмента.
-      const rubric = fs.readFileSync(path.join(io.pluginRoot(), 'core', 'review-rubric.md'), 'utf8');
-      const extra = appendix(snapId, rubric, diff.text, diffFile, cfg, res.headChanged, diff.omitted, res.skipped);
-      const updatedInput = Object.assign({}, input.tool_input, {
-        prompt: String(input.tool_input.prompt || '') + '\n' + extra,
-        run_in_background: false,
-      });
-      const out = {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'allow',
-          permissionDecisionReason: `sheriff: снимок ревью ${snapId}`,
-          updatedInput,
-        },
-      };
-      if (res.headChanged) out.systemMessage = 'sheriff: ' + HEAD_WARNING;
-      io.emitJson(out);
+      // Шаг 5. Вход инструмента не меняется: данные ревью субагенту передаёт хук SubagentStart.
+      if (res.headChanged) io.emitJson({ systemMessage: 'sheriff: ' + HEAD_WARNING });
     } catch (err) {
       // Шаг 6. Ошибка: резерв снимается, вызов блокируется с причиной.
       if (snapDir) fs.rmSync(snapDir, { recursive: true, force: true });

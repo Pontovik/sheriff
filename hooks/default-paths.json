@@ -5,7 +5,9 @@
     "*.pdf", "*.doc", "*.docx", "*.xls", "*.xlsx", "*.ppt", "*.pptx", "*.odt",
     "*.mp3", "*.wav", "*.ogg", "*.mp4", "*.mov", "*.avi", "*.webm",
     "*.ttf", "*.otf", "*.woff", "*.woff2", "*.eot",
-    "/LICENSE", "/LICENSE.txt", "/COPYING", "/CHANGELOG", "/CHANGELOG.txt", "/AUTHORS", "/NOTICE"
+    "/LICENSE", "/LICENSE.txt", "/COPYING", "/CHANGELOG", "/CHANGELOG.txt", "/AUTHORS", "/NOTICE",
+    ".env", ".env.*", "*.pem", "*.key", "*.pfx", "*.p12", "*.jks", "*.keystore",
+    "id_rsa*", "id_ecdsa*", "id_ed25519*", ".npmrc", ".pypirc", ".netrc"
   ],
   "excludeDirs": [
     ".git", "node_modules", "bin", "obj", "dist", "build", "target",

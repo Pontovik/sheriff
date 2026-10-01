@@ -34,20 +34,70 @@ test('правка исходника без ревью блокируется, 
   assert.strictEqual(s.stop({ stop_hook_active: true }).stdout, '');
 });
 
-test('вход ревьюера: снимок, рубрика, дифф, передний план', () => {
+test('вызов ревьюера: снимок есть, вход инструмента не меняется и явно не разрешается', () => {
   const { repo, s } = setup();
   edit(repo);
   const call = s.callReviewer();
   assert.strictEqual(call.allowed, true);
+  assert.strictEqual(call.silent, true, 'ни решения о разрешении, ни нового входа');
   assert.ok(call.snapshotId);
-  assert.ok(call.prompt.startsWith('Бриф: тестовая задача.'));
-  assert.match(call.prompt, /# Рубрика/);
-  assert.match(call.prompt, /-const b = 2;/);
-  assert.match(call.prompt, /\+const b = 3;/);
-  assert.ok(call.prompt.includes(`SHERIFF-REVIEW ${call.snapshotId} COMPLETE`));
-  assert.strictEqual(call.updatedInput.run_in_background, false);
-  assert.strictEqual(call.updatedInput.subagent_type, h.REVIEWER);
-  assert.strictEqual(call.updatedInput.description, 'review');
+  assert.match(s.diffOf(call.snapshotId), /\+const b = 3;/);
+});
+
+test('данные ревью приходят в контекст субагента при старте: снимок, рубрика, дифф, строка отчёта', () => {
+  const { repo, s } = setup();
+  edit(repo);
+  const call = s.callReviewer();
+  const { context } = s.bind('ag1');
+  assert.ok(context.includes(`Идентификатор снимка: ${call.snapshotId}`));
+  assert.ok(context.includes('# Рубрика ревью sheriff'), 'рубрика целиком');
+  assert.doesNotMatch(context, /Прочитай рубрику целиком из файла/);
+  assert.match(context, /-const b = 2;/);
+  assert.match(context, /\+const b = 3;/);
+  assert.ok(context.includes(`SHERIFF-REVIEW ${call.snapshotId} COMPLETE`));
+});
+
+test('ревьюер в фоне запрещён, запуск не резервируется', () => {
+  const { repo, s } = setup();
+  edit(repo);
+  const call = s.callReviewer({ run_in_background: true });
+  assert.strictEqual(call.denied, true);
+  assert.match(call.reason, /в переднем плане/);
+  assert.strictEqual(s.state().activeRun, null);
+  assert.strictEqual(s.callReviewer({ run_in_background: false }).allowed, true);
+});
+
+test('контекст не длиннее лимита платформы: большой дифф уходит путём к файлу, строка отчёта в начале', () => {
+  const { repo, s } = setup();
+  h.write(repo, 'src/a.js', Array.from({ length: 2000 }, (_, i) => `const value${i} = ${i};`).join('\n') + '\n');
+  const call = s.callReviewer();
+  const { context } = s.bind('ag1');
+  assert.ok(context.length <= 10000, `длина ${context.length}`);
+  assert.ok(context.includes(path.join(s.sessionDir(), 'snapshots', call.snapshotId, 'diff.patch')));
+  assert.doesNotMatch(context, /const value1000 = 1000;/);
+  // Claude Code показывает от слишком длинного контекста только первые 2 КБ: обязательное должно быть там.
+  assert.ok(context.slice(0, 2000).includes(`SHERIFF-REVIEW ${call.snapshotId} COMPLETE`));
+});
+
+test('дифф помещается только без рубрики: дифф в контексте, рубрика путём к файлу', () => {
+  const { repo, s } = setup();
+  h.write(repo, 'src/a.js', Array.from({ length: 300 }, (_, i) => `const v${i} = ${i};`).join('\n') + '\n');
+  const call = s.callReviewer();
+  const { context } = s.bind('ag1');
+  assert.ok(context.length <= 10000, `длина ${context.length}`);
+  assert.match(context, /const v299 = 299;/);
+  assert.ok(context.includes(path.join(h.ROOT, 'core', 'review-rubric.md')));
+  assert.ok(call.snapshotId);
+});
+
+test('данные ревью получает только привязанный субагент, повторный старт того же получает их снова', () => {
+  const { repo, s } = setup();
+  edit(repo);
+  assert.strictEqual(s.bind('ag-early').context, undefined, 'до вызова ревьюера данных нет');
+  s.callReviewer();
+  assert.ok(s.bind('ag1').context);
+  assert.strictEqual(s.bind('ag2').context, undefined);
+  assert.ok(s.bind('ag1').context);
 });
 
 test('INCOMPLETE для текущего состояния: Stop пропускает с предупреждением без блокировки', () => {
@@ -186,8 +236,9 @@ test('два параллельных вызова ревьюера: прохо�
   const described = results.map(h.describeCall);
   assert.strictEqual(described.filter((d) => d.allowed).length, 1);
   assert.strictEqual(described.filter((d) => d.denied).length, 2);
-  const winner = described.find((d) => d.allowed);
-  assert.strictEqual(s.state().activeRun.snapshotId, winner.snapshotId);
+  // Проигравшие отказаны до снимка: на диске ровно снимок активного запуска.
+  const snapshots = fs.readdirSync(path.join(s.sessionDir(), 'snapshots'));
+  assert.deepStrictEqual(snapshots, [s.state().activeRun.snapshotId]);
 });
 
 test('незапустившийся ревьюер: следующий запуск разрешён через 15 секунд', () => {
@@ -334,6 +385,25 @@ test('влияющие файлы: md не блокирует, csproj, CI и loc
   }
 });
 
+test('файлы с секретами не требуют ревью и не попадают в дифф', () => {
+  const { repo, s } = setup();
+  const secrets = ['.env', 'config/.env.local', 'certs/server.pem', 'certs/server.key', '.ssh/id_rsa', '.npmrc'];
+  for (const rel of secrets) h.write(repo, rel, 'TOKEN=secret-value\n');
+  assert.strictEqual(s.stop().stdout, '', 'одни секреты ревью не требуют');
+  edit(repo);
+  const call = s.callReviewer();
+  assert.doesNotMatch(s.diffOf(call.snapshotId), /secret-value/);
+  assert.doesNotMatch(s.bind('ag1').context, /secret-value/);
+});
+
+test('секрет, явно включённый через include, требует ревью', () => {
+  const { repo, s } = setup();
+  h.write(repo, '.sheriff.json', JSON.stringify({ include: ['.env.example'] }));
+  s.toggle('--rebase');
+  h.write(repo, '.env.example', 'TOKEN=\n');
+  assert.strictEqual(s.blocked(), true);
+});
+
 test('правка только пробелов в исходнике блокирует', () => {
   const { repo, s } = setup();
   h.write(repo, 'src/a.js', 'const a = 1;\nconst b = 2;  \n');
@@ -352,18 +422,19 @@ test('файл сверх лимита диффа: в диффе заголов�
   const diff = s.diffOf(call.snapshotId);
   assert.match(diff, /diff --sheriff a\/package-lock\.json[^\n]*\n# добавлен[^\n]*\n# тело опущено: дифф больше лимита размера/);
   assert.match(diff, /\+const b = 7;/);
-  assert.match(call.prompt, /Файлы без тела диффа \(1\)/);
+  assert.match(s.bind('ag1').context, /Файлы без тела диффа \(1\)/);
 });
 
-test('дифф больше лимита промпта передаётся путём к файлу', () => {
+test('дифф больше лимита промпта из настроек передаётся путём к файлу', () => {
   const { repo, s } = setup();
   h.write(repo, '.sheriff.json', JSON.stringify({ maxPromptDiffBytes: 100 }));
   s.toggle('--rebase');
   h.write(repo, 'src/a.js', Array.from({ length: 50 }, (_, i) => `const v${i} = ${i};`).join('\n') + '\n');
   const call = s.callReviewer();
-  assert.match(call.prompt, /в промпт не помещён/);
-  assert.ok(call.prompt.includes(path.join(s.sessionDir(), 'snapshots', call.snapshotId, 'diff.patch')));
-  assert.doesNotMatch(call.prompt, /const v10 = 10;/);
+  const { context } = s.bind('ag1');
+  assert.match(context, /Прочитай дифф целиком из файла/);
+  assert.ok(context.includes(path.join(s.sessionDir(), 'snapshots', call.snapshotId, 'diff.patch')));
+  assert.doesNotMatch(context, /const v10 = 10;/);
 });
 
 test('бинарный влияющий файл: заголовок без тела', () => {

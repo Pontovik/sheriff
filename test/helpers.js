@@ -146,14 +146,21 @@ class Session {
     };
   }
 
-  callReviewer() {
+  callReviewer(toolInput) {
     const input = this.reviewerInput();
+    Object.assign(input.tool_input, toolInput);
     const r = this.hook('review-snapshot', input);
-    return Object.assign(r, describeCall(r), { toolUseId: input.tool_use_id });
+    const call = describeCall(r);
+    // Пропущенный вызов сам ничего не сообщает: снимок виден по активному запуску.
+    const run = call.allowed && fs.existsSync(this.statePath()) ? this.state().activeRun : null;
+    return Object.assign(r, call, { snapshotId: run ? run.snapshotId : null, toolUseId: input.tool_use_id });
   }
 
+  // Старт субагента. context: данные ревью, которые хук передал в контекст субагента.
   bind(agentId) {
-    return this.hook('review-bind', { hook_event_name: 'SubagentStart', agent_id: agentId, agent_type: REVIEWER });
+    const r = this.hook('review-bind', { hook_event_name: 'SubagentStart', agent_id: agentId, agent_type: REVIEWER });
+    const out = r.json && r.json.hookSpecificOutput;
+    return Object.assign(r, { context: out ? out.additionalContext : undefined });
   }
 
   done(agentId, message, extra) {
@@ -225,15 +232,13 @@ class Session {
   }
 }
 
+// Хук ревьюера не разрешает вызов явно и не меняет вход: только запрещает или молчит.
 function describeCall(r) {
   const out = r.json && r.json.hookSpecificOutput;
-  if (!out) return { allowed: false, denied: false, silent: true, reason: '' };
-  if (out.permissionDecision === 'deny') {
+  if (out && out.permissionDecision === 'deny') {
     return { allowed: false, denied: true, silent: false, reason: out.permissionDecisionReason };
   }
-  const prompt = out.updatedInput ? out.updatedInput.prompt : '';
-  const m = /Идентификатор снимка: (\S+)/.exec(prompt);
-  return { allowed: true, denied: false, silent: false, prompt, snapshotId: m ? m[1] : null, updatedInput: out.updatedInput };
+  return { allowed: true, denied: false, silent: String(r.stdout || '').trim() === '', reason: '' };
 }
 
 module.exports = { ROOT, REVIEWER, Session, tmpdir, cleanupAll, git, gitRepo, write, commitAll, describeCall };
